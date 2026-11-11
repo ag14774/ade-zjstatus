@@ -7,8 +7,11 @@ icons and tab groups.
 > [!WARNING]
 > Under development: none of this is released yet.
 
+![The tab bar with agent status icons and tab groups](./assets/tab-groups.png)
+
 Both features need **Zellij 0.46 or newer**. Existing configs work unchanged: everything below is off until you
-use it. See [examples/groups.kdl](./examples/groups.kdl) for a complete layout.
+use it. See [examples/groups.kdl](./examples/groups.kdl) for a complete layout: the screenshot is its bar, drawn
+by the plugin's own rendering code.
 
 ## Agent status
 
@@ -182,4 +185,5 @@ files.
 
 ## Development
 
-See [Development](./README.md#-development) in the README.
+See [Development](./README.md#-development) in the README. `examples/screenshot.sh` redraws the screenshot above
+from `examples/groups.kdl` (it needs wasmtime, Python 3, ImageMagick, Google Chrome and JetBrainsMono Nerd Font).
