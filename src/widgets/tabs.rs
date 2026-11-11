@@ -9,6 +9,8 @@ use crate::{attention::AttentionConfig, config::ZellijState, render::FormattedPa
 
 use super::widget::Widget;
 
+mod grouped;
+
 pub struct TabsWidget {
     active_tab_format: Vec<FormattedPart>,
     active_tab_fullscreen_format: Vec<FormattedPart>,
@@ -29,6 +31,7 @@ pub struct TabsWidget {
     tab_truncate_start_format: Vec<FormattedPart>,
     tab_truncate_end_format: Vec<FormattedPart>,
     tab_zero_based_index: bool,
+    groups: Option<grouped::GroupFormats>,
     attention: AttentionConfig,
 }
 
@@ -127,6 +130,7 @@ impl TabsWidget {
             tab_truncate_start_format,
             tab_truncate_end_format,
             tab_zero_based_index,
+            groups: grouped::GroupFormats::new(config),
             attention: AttentionConfig::new(config),
         }
     }
@@ -134,6 +138,10 @@ impl TabsWidget {
 
 impl Widget for TabsWidget {
     fn process(&self, _name: &str, state: &ZellijState) -> String {
+        if let Some(groups) = &self.groups {
+            return self.process_grouped(groups, state);
+        }
+
         let mut output = "".to_owned();
         let mut counter = 0;
 
@@ -181,6 +189,10 @@ impl Widget for TabsWidget {
     }
 
     fn process_click(&self, _name: &str, state: &ZellijState, pos: usize) {
+        if let Some(groups) = &self.groups {
+            return self.process_click_grouped(groups, state, pos);
+        }
+
         let mut offset = 0;
         let mut counter = 0;
 

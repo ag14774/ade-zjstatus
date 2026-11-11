@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use zjstatus::{
     config::{self, ModuleConfig, UpdateEventMask, ZellijState},
-    frames, pipe,
+    frames, pipe, tab_groups,
     widgets::{
         attention::AttentionWidget,
         command::{CommandResult, CommandWidget},
@@ -34,6 +34,7 @@ struct State {
     widget_map: BTreeMap<String, Arc<dyn Widget>>,
     focus_cwd_commands: Vec<String>,
     err: Option<anyhow::Error>,
+    tab_groups: tab_groups::Controller,
 }
 
 #[cfg(not(test))]
@@ -93,6 +94,7 @@ impl ZellijPlugin for State {
         self.widget_map = register_widgets(&configuration);
         self.focus_cwd_commands =
             zjstatus::widgets::command::focus_cwd_command_names(&configuration);
+        self.tab_groups = tab_groups::Controller::new(&configuration);
         self.userspace_configuration = configuration;
         self.pending_events = Vec::new();
         self.got_permissions = false;
@@ -112,11 +114,19 @@ impl ZellijPlugin for State {
             incoming_notification: None,
             focused_pane_id: None,
             focused_pane_cwd: None,
+            tab_groups: Default::default(),
         };
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
         let mut should_render = false;
+
+        if let Some(input) = &pipe_message.payload
+            && self.tab_groups.handle_pipe(&mut self.state, input)
+        {
+            self.state.cache_mask = UpdateEventMask::Tab as u8;
+            should_render = true;
+        }
 
         match pipe_message.source {
             PipeSource::Cli(_) => {
@@ -188,6 +198,15 @@ impl ZellijPlugin for State {
 }
 
 impl State {
+    /// Reads the shared tab group state again. Returns whether it changed.
+    fn reload_tab_groups(&mut self) -> bool {
+        let changed = self.tab_groups.reload(&mut self.state);
+        if changed {
+            self.state.cache_mask = UpdateEventMask::Tab as u8;
+        }
+        changed
+    }
+
     fn update_focused_pane(&mut self) {
         let active_tab = self.state.tabs.iter().find(|t| t.active);
 
@@ -245,11 +264,15 @@ impl State {
                 tracing::Span::current().record("event_type", "Event::Mouse");
                 tracing::debug!(mouse = ?mouse_info);
 
+                self.state.tab_groups.left_click = matches!(mouse_info, Mouse::LeftClick(..));
                 self.module_config.handle_mouse_action(
                     self.state.clone(),
                     mouse_info,
                     self.widget_map.clone(),
                 );
+                if self.state.tab_groups.left_click {
+                    should_render = self.reload_tab_groups();
+                }
             }
             Event::ModeUpdate(mode_info) => {
                 tracing::Span::current().record("event_type", "Event::ModeUpdate");
@@ -258,6 +281,7 @@ impl State {
 
                 self.state.mode = mode_info;
                 self.state.cache_mask = UpdateEventMask::Mode as u8;
+                self.reload_tab_groups();
 
                 should_render = true;
             }
@@ -311,6 +335,10 @@ impl State {
                     stderr = ?String::from_utf8(stderr.clone()),
                     context = ?context
                 );
+
+                if self.tab_groups.handle_command_result(exit_code, &context) {
+                    return false;
+                }
 
                 self.state.cache_mask = UpdateEventMask::Command as u8;
 
@@ -376,6 +404,8 @@ impl State {
 
                 self.state.cache_mask = UpdateEventMask::Tab as u8;
                 self.state.tabs = tab_info;
+                self.reload_tab_groups();
+                self.tab_groups.keep_together(&self.state);
 
                 should_render = true;
             }
@@ -383,6 +413,9 @@ impl State {
                 tracing::Span::current().record("event_type", "Event::Timer");
                 set_timeout(REFRESH_INTERVAL_SECONDS);
                 self.state.cache_mask = 0;
+                // Another instance may have expanded or collapsed a group.
+                self.reload_tab_groups();
+                self.tab_groups.keep_together(&self.state);
 
                 should_render = true;
             }
