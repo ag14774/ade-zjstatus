@@ -1,3 +1,4 @@
+pub mod attention;
 pub mod border;
 pub mod config;
 pub mod frames;

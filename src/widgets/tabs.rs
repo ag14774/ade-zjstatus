@@ -5,7 +5,7 @@ use zellij_tile::{
     shim::switch_tab_to,
 };
 
-use crate::{config::ZellijState, render::FormattedPart};
+use crate::{attention::AttentionConfig, config::ZellijState, render::FormattedPart};
 
 use super::widget::Widget;
 
@@ -29,6 +29,7 @@ pub struct TabsWidget {
     tab_truncate_start_format: Vec<FormattedPart>,
     tab_truncate_end_format: Vec<FormattedPart>,
     tab_zero_based_index: bool,
+    attention: AttentionConfig,
 }
 
 impl TabsWidget {
@@ -126,6 +127,7 @@ impl TabsWidget {
             tab_truncate_start_format,
             tab_truncate_end_format,
             tab_zero_based_index,
+            attention: AttentionConfig::new(config),
         }
     }
 }
@@ -348,7 +350,10 @@ impl TabsWidget {
 
             content = self.replace_indicators(content, tab, panes);
 
-            output = format!("{}{}", output, f.format_string(&content));
+            let rendered = self
+                .attention
+                .render(f, &content, || self.attention.tab_counts(tab, panes));
+            output = format!("{}{}", output, rendered);
         }
 
         output.to_owned()
