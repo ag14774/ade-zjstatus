@@ -193,6 +193,8 @@ impl ModuleConfig {
             Mouse::Hold(_, y) => y,
             Mouse::Release(_, y) => y,
             Mouse::Hover(_, _) => return,
+            // The first click of a double click already arrived as a LeftClick.
+            Mouse::DoubleClick(_, _) => return,
         };
 
         let output_left = self.left_parts.iter_mut().fold("".to_owned(), |acc, part| {

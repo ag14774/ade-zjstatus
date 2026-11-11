@@ -133,6 +133,7 @@ impl ZellijPlugin for State {
                     should_render = pipe::parse_protocol(&mut self.state, &input);
                 }
             }
+            PipeSource::PromptRequest { .. } => {}
         }
 
         should_render
