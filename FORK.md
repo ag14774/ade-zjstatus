@@ -131,6 +131,7 @@ group of the active tab. They do nothing in `auto` mode.
 | `zjstatus::groups::expand[::NAME]` | expands it |
 | `zjstatus::groups::collapse_all` | collapses all groups |
 | `zjstatus::groups::expand_all` | expands all groups |
+| `zjstatus::groups::toggle_all` | collapses all groups if any is expanded, otherwise expands them all |
 
 A keybinding sends one with `MessagePlugin`; without a plugin URL it goes to every plugin, and the bar in the
 active tab acts on it. For example, in tab mode of Zellij's `config.kdl`:
@@ -139,8 +140,7 @@ active tab acts on it. For example, in tab mode of Zellij's `config.kdl`:
 keybinds {
     tab {
         bind "g" { MessagePlugin { name "zjstatus"; payload "zjstatus::groups::toggle"; }; }
-        bind "G" { MessagePlugin { name "zjstatus"; payload "zjstatus::groups::collapse_all"; }; }
-        bind "E" { MessagePlugin { name "zjstatus"; payload "zjstatus::groups::expand_all"; }; }
+        bind "G" { MessagePlugin { name "zjstatus"; payload "zjstatus::groups::toggle_all"; }; }
     }
 }
 ```
