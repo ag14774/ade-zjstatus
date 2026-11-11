@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use zellij_tile::prelude::{InputMode, PaneManifest, TabInfo};
+use zellij_tile::prelude::{InputMode, PaneManifest, PermissionType, TabInfo};
 
 use crate::config::ZellijState;
 
@@ -196,11 +196,19 @@ pub fn active_group(tabs: &[TabInfo], config: &GroupsConfig) -> Option<String> {
         })
 }
 
-/// The tab to move one step left so that the tabs of each group end up next
-/// to each other, or `None` when they already are. Every instance of the bar
-/// computes the same answer, so exactly one tab moves at a time. Moving that
-/// tab left keeps the target order, so repeating this converges.
-pub fn next_move(tabs: &[TabInfo], config: &GroupsConfig) -> Option<usize> {
+/// A move that brings the tabs of each group closer together.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Move {
+    pub tab_id: usize,
+    pub position: usize,
+}
+
+/// The next tab to move, and where, so that the tabs of each group end up next
+/// to each other; `None` when they already are. It is the first tab out of
+/// place in the target order, which moves left to its place. Every instance of
+/// the bar computes the same move, and the move keeps the target order, so
+/// repeating this converges in at most one move per tab.
+pub fn next_move(tabs: &[TabInfo], config: &GroupsConfig) -> Option<Move> {
     let gathering = GroupsConfig {
         keep_together: true,
         ..config.clone()
@@ -214,8 +222,20 @@ pub fn next_move(tabs: &[TabInfo], config: &GroupsConfig) -> Option<usize> {
     current
         .iter()
         .zip(target.iter())
-        .find(|(now, wanted)| now.tab_id != wanted.tab_id)
-        .map(|(_, wanted)| wanted.tab_id)
+        .position(|(now, wanted)| now.tab_id != wanted.tab_id)
+        .map(|position| Move {
+            tab_id: target[position].tab_id,
+            position,
+        })
+}
+
+/// Permissions tab groups need beyond upstream's: moving tabs to keep groups
+/// together runs a Zellij action.
+pub fn extra_permissions(config: &BTreeMap<String, String>) -> Vec<PermissionType> {
+    match GroupsConfig::new(config) {
+        Some(groups) if groups.keep_together => vec![PermissionType::RunActionsAsUser],
+        _ => vec![],
+    }
 }
 
 /// Which groups are collapsed: a default and per-group choices.
@@ -400,27 +420,17 @@ pub mod store {
     }
 }
 
-const MOVE_CONTEXT: &str = "zjstatus_tab_groups";
-
-/// Plugins can't move tabs without the RunActionsAsUser permission, so this
-/// uses the CLI (RunCommands, which zjstatus already has).
-fn move_tab_left(session: &str, tab_id: usize) {
-    let tab_id = tab_id.to_string();
-    let command = [
-        "zellij",
-        "--session",
-        session,
-        "action",
-        "move-tab",
-        "left",
-        "--tab-id",
-        &tab_id,
-    ];
-    let context = BTreeMap::from([(MOVE_CONTEXT.to_owned(), "move".to_owned())]);
+/// Moves a tab with the plugin API (`RunActionsAsUser`). Moving a tab to a
+/// position is idempotent, so a repeated move does no harm.
+fn move_tab(tab_move: &Move) {
+    let action = zellij_tile::prelude::actions::Action::MoveTabToPosition {
+        id: tab_move.tab_id as u64,
+        position: tab_move.position as u64,
+    };
     #[cfg(all(not(feature = "bench"), not(test)))]
-    zellij_tile::prelude::run_command(&command, context);
+    zellij_tile::prelude::run_action(action, BTreeMap::new());
     #[cfg(any(feature = "bench", test))]
-    let _ = (command, context);
+    let _ = action;
 }
 
 /// The side of tab groups that runs in the plugin: shared state, keyboard
@@ -429,11 +439,10 @@ fn move_tab_left(session: &str, tab_id: usize) {
 pub struct Controller {
     config: Option<GroupsConfig>,
     plugin_id: Option<u32>,
-    /// The tab order when this instance last moved its tab; no other move
-    /// happens until the order changes.
-    pending_move: Option<Vec<usize>>,
-    /// The tab order in which a move failed; not retried in that order.
-    failed_move: Option<Vec<usize>>,
+    /// The tab order in which this instance last moved its tab, and the move.
+    /// The same move isn't repeated in the same order: if it worked, the order
+    /// changes; if it didn't, repeating it wouldn't help.
+    last_move: Option<(Vec<usize>, Move)>,
 }
 
 impl Controller {
@@ -507,52 +516,27 @@ impl Controller {
         changed
     }
 
-    /// After a tab update: moves this instance's tab one step if it is the
-    /// tab that has to move to keep its group together. Returns the tab moved.
-    pub fn keep_together(&mut self, state: &ZellijState) -> Option<usize> {
+    /// After a tab update: moves this instance's tab if it is the tab that has
+    /// to move to keep its group together. Returns the move.
+    pub fn keep_together(&mut self, state: &ZellijState) -> Option<Move> {
         let config = self.config.clone()?;
+        if !config.keep_together || state.mode.mode == InputMode::RenameTab {
+            return None;
+        }
+        let tab_move = next_move(&state.tabs, &config)?;
         let mut order: Vec<&TabInfo> = state.tabs.iter().collect();
         order.sort_by_key(|tab| tab.position);
         let order: Vec<usize> = order.iter().map(|tab| tab.tab_id).collect();
-        if self
-            .pending_move
-            .as_ref()
-            .is_some_and(|pending| *pending != order)
-        {
-            self.pending_move = None;
-        }
-        if !config.keep_together
-            || state.mode.mode == InputMode::RenameTab
-            || self.pending_move.is_some()
-            || self.failed_move.as_ref() == Some(&order)
+        let attempt = (order, tab_move.clone());
+        if self.last_move.as_ref() == Some(&attempt)
+            || self.own_tab(state).map(|tab| tab.tab_id) != Some(tab_move.tab_id)
         {
             return None;
         }
-        let mover = next_move(&state.tabs, &config)?;
-        let session = state.mode.session_name.clone()?;
-        if self.own_tab(state).map(|tab| tab.tab_id) != Some(mover) {
-            return None;
-        }
-        tracing::debug!("moving tab {mover} left to keep its group together");
-        self.pending_move = Some(order);
-        move_tab_left(&session, mover);
-        Some(mover)
-    }
-
-    /// Handles the result of a move. Returns whether the result was one.
-    pub fn handle_command_result(
-        &mut self,
-        exit_code: Option<i32>,
-        context: &BTreeMap<String, String>,
-    ) -> bool {
-        if !context.contains_key(MOVE_CONTEXT) {
-            return false;
-        }
-        if exit_code != Some(0) {
-            tracing::debug!("moving a tab failed: {exit_code:?}");
-            self.failed_move = self.pending_move.take();
-        }
-        true
+        tracing::debug!("moving tab {tab_move:?} to keep its group together");
+        move_tab(&tab_move);
+        self.last_move = Some(attempt);
+        Some(tab_move)
     }
 }
 
@@ -669,15 +653,23 @@ mod test {
         assert_eq!(active_group(&tabs(&["api: a*", "web: b"]), &config), None);
     }
 
+    fn names(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
     /// Applies `next_move` until nothing moves, like the bar instances do.
     fn settle(names: &[&str]) -> (Vec<String>, usize) {
         let config = config();
         let mut tabs = tabs(names);
         let mut moves = 0;
-        while let Some(mover) = next_move(&tabs, &config) {
-            let at = tabs.iter().position(|tab| tab.tab_id == mover).unwrap();
-            assert!(at > 0, "never moves the first tab");
-            tabs.swap(at - 1, at);
+        while let Some(tab_move) = next_move(&tabs, &config) {
+            let at = tabs
+                .iter()
+                .position(|tab| tab.tab_id == tab_move.tab_id)
+                .unwrap();
+            assert!(tab_move.position < at, "only moves tabs left");
+            let tab = tabs.remove(at);
+            tabs.insert(tab_move.position, tab);
             for (position, tab) in tabs.iter_mut().enumerate() {
                 tab.position = position;
             }
@@ -694,16 +686,21 @@ mod test {
             (vec!["api: a".into(), "api: b".into(), "notes".into()], 1)
         );
         assert_eq!(
-            settle(&["api: a", "api: b", "web: x", "notes", "api: c"]).0,
-            ["api: a", "api: b", "api: c", "web: x", "notes"],
+            settle(&["api: a", "api: b", "web: x", "notes", "api: c"]),
+            (names(&["api: a", "api: b", "api: c", "web: x", "notes"]), 1),
+            "a new tab at the end moves straight to its group",
         );
         assert_eq!(
             settle(&["api: a", "web: x", "web: y", "api: b"]).0,
             ["api: a", "api: b", "web: x", "web: y"],
         );
         assert_eq!(
-            settle(&["api: a", "web: x", "api: b", "web: y", "solo: z"]).0,
-            ["api: a", "api: b", "web: x", "web: y", "solo: z"],
+            settle(&["api: a", "web: x", "api: b", "web: y", "api: c", "solo: z"]),
+            (
+                names(&["api: a", "api: b", "api: c", "web: x", "web: y", "solo: z"]),
+                2
+            ),
+            "placing the api tabs also brings the web tabs together",
         );
     }
 
@@ -861,17 +858,6 @@ mod test {
         }
     }
 
-    /// The same tabs after the tab at `from` moved one step left.
-    fn moved_left(state: &ZellijState, from: usize, own: usize) -> ZellijState {
-        let mut moved = state.clone();
-        moved.tabs.swap(from - 1, from);
-        for (position, tab) in moved.tabs.iter_mut().enumerate() {
-            tab.position = position;
-        }
-        moved.panes = seen_from(&[], own).panes;
-        moved
-    }
-
     fn controller() -> Controller {
         Controller {
             config: Some(config()),
@@ -881,24 +867,26 @@ mod test {
     }
 
     #[test]
-    fn moves_its_own_tab_one_step_at_a_time() {
+    fn moves_its_own_tab_to_its_group() {
         let mut controller = controller();
         let state = seen_from(&["api: a", "x", "y", "api: b"], 3);
+        let to_group = Move {
+            tab_id: 13,
+            position: 1,
+        };
 
-        assert_eq!(controller.keep_together(&state), Some(13));
+        assert_eq!(controller.keep_together(&state), Some(to_group));
         assert_eq!(
             controller.keep_together(&state),
             None,
-            "waits until its move shows"
+            "not repeated in the same order"
         );
 
-        let moved = moved_left(&state, 3, 2);
-        assert_eq!(controller.keep_together(&moved), Some(13));
-        assert_eq!(
-            controller.keep_together(&moved_left(&moved, 2, 1)),
-            None,
-            "together now"
-        );
+        let mut moved = seen_from(&["api: a", "api: b", "x", "y"], 1);
+        for (tab, id) in moved.tabs.iter_mut().zip([10, 13, 11, 12]) {
+            tab.tab_id = id;
+        }
+        assert_eq!(controller.keep_together(&moved), None, "together now");
     }
 
     #[test]
@@ -917,21 +905,32 @@ mod test {
     }
 
     #[test]
-    fn a_failed_move_is_retried_only_after_the_tabs_change() {
+    fn a_move_that_did_nothing_is_retried_only_after_the_tabs_change() {
         let mut controller = controller();
         let state = seen_from(&["api: a", "x", "api: b"], 2);
-        let context = BTreeMap::from([(MOVE_CONTEXT.to_owned(), "move".to_owned())]);
+        let to_group = Move {
+            tab_id: 12,
+            position: 1,
+        };
 
-        assert_eq!(controller.keep_together(&state), Some(12));
-        assert!(
-            !controller.handle_command_result(Some(1), &BTreeMap::new()),
-            "not a move"
-        );
-        assert!(controller.handle_command_result(Some(1), &context));
+        assert_eq!(controller.keep_together(&state), Some(to_group.clone()));
         assert_eq!(controller.keep_together(&state), None);
 
         let mut changed = seen_from(&["api: a", "x", "api: b", "new"], 2);
         changed.tabs[3].tab_id = 42;
-        assert_eq!(controller.keep_together(&changed), Some(12));
+        assert_eq!(controller.keep_together(&changed), Some(to_group));
+    }
+
+    #[test]
+    fn moving_tabs_asks_for_one_more_permission() {
+        let groups = |extra: &[(&str, &str)]| {
+            let mut config = BTreeMap::from([("tab_groups".to_owned(), "true".to_owned())]);
+            config.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+            extra_permissions(&config)
+        };
+
+        assert_eq!(groups(&[]), vec![PermissionType::RunActionsAsUser]);
+        assert_eq!(groups(&[("tab_group_keep_together", "false")]), vec![]);
+        assert_eq!(extra_permissions(&BTreeMap::new()), vec![]);
     }
 }

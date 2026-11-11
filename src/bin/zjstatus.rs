@@ -65,11 +65,13 @@ impl ZellijPlugin for State {
         // we need the ReadApplicationState permission to receive the ModeUpdate and TabUpdate
         // events
         // we need the RunCommands permission to run "cargo test" in a floating window
-        request_permission(&[
+        let mut permissions = vec![
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
             PermissionType::RunCommands,
-        ]);
+        ];
+        permissions.extend(tab_groups::extra_permissions(&configuration));
+        request_permission(&permissions);
 
         subscribe(&[
             EventType::Mouse,
@@ -335,10 +337,6 @@ impl State {
                     stderr = ?String::from_utf8(stderr.clone()),
                     context = ?context
                 );
-
-                if self.tab_groups.handle_command_result(exit_code, &context) {
-                    return false;
-                }
 
                 self.state.cache_mask = UpdateEventMask::Command as u8;
 

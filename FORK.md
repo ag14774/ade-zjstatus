@@ -85,15 +85,14 @@ active tab is in a collapsed group, the bar shows the group's label, the active 
 - **Collapsing** is manual: groups start expanded, or collapsed with `tab_group_start_collapsed "true"`. With
   `tab_group_collapse "auto"`, only the group of the active tab is expanded, and clicking a collapsed group goes to
   it.
-- **Keeping groups together.** A group's tabs are moved next to each other, at the place of its first tab, one step
-  at a time. A new `api:` tab at the end of the bar moves left until it reaches the other `api` tabs. This keeps
-  the bar's order the same as Zellij's, so moving between tabs and the tab numbers follow the bar. Tabs don't move
-  while you rename one.
+- **Keeping groups together.** A group's tabs are moved next to each other, at the place of its first tab. A new
+  `api:` tab at the end of the bar moves straight to the other `api` tabs. This keeps the bar's order the same as
+  Zellij's, so moving between tabs and the tab numbers follow the bar. Tabs don't move while you rename one.
 
-  The bar moves tabs with `zellij action move-tab` (with the RunCommands permission zjstatus already asks for), so
-  `zellij` must be on the `PATH` Zellij was started with. If a move fails, it isn't tried again until the tabs
-  change. With `tab_group_keep_together "false"`, nothing moves, and only neighbouring tabs are grouped. Use that
-  as well if a tab has two zjstatus bars with groups, so that only one of them moves tabs.
+  The bar moves tabs through Zellij's plugin API, so turning groups on asks for one more permission: "Execute
+  actions as the user". A move puts a tab at a position, so repeating it changes nothing, and a move that changed
+  nothing isn't repeated until the tabs change. With `tab_group_keep_together "false"`, nothing moves, no extra
+  permission is needed, and only neighbouring tabs are grouped.
 - **Many tabs.** `tab_display_count` counts groups and plain tabs, not tabs, and the truncation formats' `{count}`
   is the number of groups and plain tabs left out.
 
@@ -153,7 +152,8 @@ From a shell: `zellij pipe "zjstatus::groups::toggle::api"`.
 - All of upstream's options and widgets keep working, so existing configs work unchanged. The
   [upstream wiki](https://github.com/dj95/zjstatus/wiki) documents them.
 - Releases need Zellij 0.46 or newer.
-- The plugins need no new permissions.
+- Tab groups ask for one more permission ("Execute actions as the user") to move tabs, unless
+  `tab_group_keep_together` is `false`. Configs without groups ask for the same permissions as upstream.
 - The plugins keep upstream's file names (`zjstatus.wasm`, `zjframes.wasm`) and its `zjstatus::` pipe messages,
   so switching between upstream and this fork only means changing the download URL.
 
