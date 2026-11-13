@@ -620,6 +620,8 @@ mod test {
             Some(("api", "auth: x"))
         );
         assert_eq!(split_prefix("api/auth", "/"), Some(("api", "auth")));
+        assert_eq!(split_prefix("api: auth", ": "), Some(("api", "auth")));
+        assert_eq!(split_prefix("api:auth", ": "), None);
         assert_eq!(split_prefix("notes", ":"), None);
         assert_eq!(split_prefix("api:", ":"), None);
         assert_eq!(split_prefix(": auth", ":"), None);
