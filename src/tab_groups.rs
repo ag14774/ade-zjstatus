@@ -466,28 +466,22 @@ pub struct Controller {
 }
 
 impl Controller {
-    pub fn new(config: &BTreeMap<String, String>) -> Self {
+    /// `plugin_id` is this instance's, to find its own tab.
+    pub fn new(config: &BTreeMap<String, String>, plugin_id: u32) -> Self {
         Self {
             config: GroupsConfig::new(config),
+            plugin_id: Some(plugin_id),
             ..Self::default()
         }
     }
 
-    fn plugin_id(&mut self) -> u32 {
-        if let Some(id) = self.plugin_id {
-            return id;
-        }
-        #[cfg(not(test))]
-        let id = zellij_tile::prelude::get_plugin_ids().plugin_id;
-        #[cfg(test)]
-        let id = 0;
-        self.plugin_id = Some(id);
-        id
+    fn own_tab<'a>(&self, state: &'a ZellijState) -> Option<&'a TabInfo> {
+        let position = own_tab_position(&state.panes, self.plugin_id?)?;
+        state.tabs.iter().find(|tab| tab.position == position)
     }
 
-    fn own_tab<'a>(&mut self, state: &'a ZellijState) -> Option<&'a TabInfo> {
-        let position = own_tab_position(&state.panes, self.plugin_id())?;
-        state.tabs.iter().find(|tab| tab.position == position)
+    fn in_active_tab(&self, state: &ZellijState) -> bool {
+        self.own_tab(state).is_some_and(|tab| tab.active)
     }
 
     /// Reads the shared state again. Returns whether it changed.
@@ -513,10 +507,7 @@ impl Controller {
             return false;
         };
         let commands: Vec<Command> = input.lines().filter_map(parse_command).collect();
-        if commands.is_empty()
-            || config.mode == CollapseMode::Auto
-            || !self.own_tab(state).is_some_and(|tab| tab.active)
-        {
+        if commands.is_empty() || config.mode == CollapseMode::Auto || !self.in_active_tab(state) {
             return false;
         }
         let Some(path) = store::path(state.mode.session_name.as_deref()) else {
